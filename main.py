@@ -1,0 +1,139 @@
+import os
+import discord
+from discord.ext import commands
+from discord import app_commands
+from dotenv import load_dotenv
+
+# Load token from .env
+load_dotenv()
+TOKEN = os.getenv("DISCORD_TOKEN")
+
+# Intents and bot setup
+intents = discord.Intents.default()
+intents.message_content = True
+intents.guilds = True
+intents.members = True
+
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# 🎯 Claim Ticket View
+class ClaimTicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.claimed_by = None
+
+    @discord.ui.button(label="Claim Ticket", style=discord.ButtonStyle.green, custom_id="claim_ticket")
+    async def claim_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        ticket_staff_role = discord.utils.get(guild.roles, name="tickets handler")
+
+        if ticket_staff_role and ticket_staff_role in interaction.user.roles:
+            if self.claimed_by:
+                await interaction.response.send_message(f"❌ Already claimed by {self.claimed_by.mention}", ephemeral=True)
+            else:
+                self.claimed_by = interaction.user
+                button.label = f"Claimed by {interaction.user.name}"
+                button.disabled = True
+                await interaction.message.edit(view=self)
+                await interaction.response.send_message(f"🎯 You claimed this ticket.", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ You need the Tickets handler role to claim this ticket.", ephemeral=True)
+
+# 🔒 Close Ticket View (Only tickets handler can close)
+class CloseTicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.red, custom_id="close_ticket")
+    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        close_ticket_staff = discord.utils.get(guild.roles, name="tickets handler")
+
+        if close_ticket_staff and close_ticket_staff in interaction.user.roles:
+            await interaction.response.send_message("✅ Ticket has been closed and will now be deleted.", ephemeral=True)
+            await interaction.channel.delete()
+        else:
+            await interaction.response.send_message("❌ You need the Tickets handler role to close this ticket.", ephemeral=True)
+
+# 🎫 HelpDesk View with ticket buttons
+class HelpDeskView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Report a Member", style=discord.ButtonStyle.red, custom_id="report_member")
+    async def report_member(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await create_ticket(interaction, "report")
+
+    @discord.ui.button(label="Other Inquiries", style=discord.ButtonStyle.green, custom_id="other_inquiries")
+    async def other_inquiries(self, interaction: discord.Interaction, _: discord.ui.Button):
+        await create_ticket(interaction, "other")
+
+# 🛠 Ticket creation logic
+async def create_ticket(interaction: discord.Interaction, category_type: str):
+    guild = interaction.guild
+    category = discord.utils.get(guild.categories, name="Tickets")
+    if category is None:
+        category = await guild.create_category("Tickets")
+
+    # Role-based access
+    ticket_staff_role = discord.utils.get(guild.roles, name="Tickets handler")
+    close_ticket_staff_role = discord.utils.get(guild.roles, name="tickets handler")
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(read_messages=False),
+        interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+        guild.me: discord.PermissionOverwrite(read_messages=True),
+    }
+
+    if ticket_staff_role:
+        overwrites[ticket_staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+
+    if close_ticket_staff_role:
+        overwrites[close_ticket_staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+
+    # Allow multiple tickets by adding timestamp to name
+    import time
+    channel_name = f"{category_type}-ticket-{interaction.user.name}-{int(time.time())}"
+    channel = await guild.create_text_channel(name=channel_name, overwrites=overwrites, category=category)
+
+    await channel.send(
+        f"Hello {interaction.user.mention}, your **{category_type}** ticket has been created. "
+        "A staff member will assist you shortly.",
+        view=ClaimTicketView()
+    )
+
+    await channel.send(view=CloseTicketView())
+    await interaction.response.send_message(f"✅ Ticket created: {channel.mention}", ephemeral=True)
+
+# 🛡 Admin-only slash command to send helpdesk embed
+def is_admin():
+    async def predicate(interaction: discord.Interaction) -> bool:
+        return interaction.user.guild_permissions.administrator
+    return app_commands.check(predicate)
+
+@bot.tree.command(name="helpdesk", description="Send the helpdesk ticket interface")
+@is_admin()
+async def helpdesk(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="📬 How Can We Help?",
+        description=(
+            "**General Questions:**\n"
+            "Check #information, #rules, and #faq. Still stuck? Ask in #qna.\n\n"
+            "**Report a Member:**\n"
+            "Read #rules first. Submit evidence privately via ticket.\n\n"
+            "**Other Inquiries:**\n"
+            "Role/medals requests, sponsorships, donations — open a ticket if it fits."
+        ),
+        color=discord.Color.blue()
+    )
+    await interaction.channel.send(embed=embed, view=HelpDeskView())
+    await interaction.response.send_message("📬 Helpdesk interface deployed.", ephemeral=True)
+
+# 🚀 Sync commands on ready
+@bot.event
+async def on_ready():
+    await bot.tree.sync()
+    print(f"✅ Logged in as {bot.user}")
+
+# 🧠 Start the bot
+bot.run(TOKEN)
